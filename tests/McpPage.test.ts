@@ -25,6 +25,7 @@ import type {TextSnapshotNode} from '../src/types.js';
 import {
   createMockCDPSession,
   createMockDialog,
+  type MockCDPSession,
   createMockMcpResponse,
   createMockPuppeteerBrowser,
   createMockPuppeteerPage,
@@ -288,6 +289,12 @@ describe('replaceHtmlElementsWithUids', () => {
 });
 
 describe('McpPage', () => {
+  function cdpSend(
+    session: sinon.SinonStubbedInstance<MockCDPSession>,
+  ): sinon.SinonStub {
+    return session.send;
+  }
+
   async function createMcpPage(options: {config?: ReadonlyServerConfig} = {}) {
     const pptrPage = createMockPuppeteerPage();
     pptrPage.emulateFocusedPage.resolves();
@@ -296,9 +303,7 @@ describe('McpPage', () => {
       config: options.config ?? createMockServerConfig(),
       locatorClass: Locator,
     });
-    const mockSession = {
-      send: sinon.stub().resolves(),
-    };
+    const mockSession = createMockCDPSession();
     sinon
       .stub(mcpPage, 'devtoolsUniverse')
       .get(() => ({session: mockSession}) as unknown as TargetUniverse);
@@ -715,7 +720,7 @@ describe('McpPage', () => {
       await mcpPage.emulate({cpuThrottlingRate: 4});
       sinon.assert.calledOnceWithExactly(pptrPage.emulateCPUThrottling, 4);
       sinon.assert.calledOnceWithExactly(
-        mockSession.send,
+        cdpSend(mockSession),
         'Emulation.setCPUThrottlingRate',
         {rate: 4},
       );
@@ -726,7 +731,7 @@ describe('McpPage', () => {
       await mcpPage.emulate({});
       sinon.assert.calledOnceWithExactly(pptrPage.emulateCPUThrottling, 1);
       sinon.assert.calledOnceWithExactly(
-        mockSession.send,
+        cdpSend(mockSession),
         'Emulation.setCPUThrottlingRate',
         {rate: 1},
       );
@@ -2271,7 +2276,7 @@ describe('McpPage', () => {
   describe('resize()', () => {
     function stubResize(
       pptrPage: MockPuppeteerPage,
-      mockSession: {send: sinon.SinonStub},
+      mockSession: sinon.SinonStubbedInstance<MockCDPSession>,
       options: {
         windowState?: 'normal' | 'minimized' | 'maximized' | 'fullscreen';
         width: number;
@@ -2285,13 +2290,14 @@ describe('McpPage', () => {
       browser.getWindowBounds.resolves({
         windowState: options.windowState ?? 'normal',
       });
-      mockSession.send.withArgs('Target.getTargetInfo').resolves({
+      const send = cdpSend(mockSession);
+      send.withArgs('Target.getTargetInfo').resolves({
         targetInfo: {embedderData: {tabActive: true}},
       });
-      mockSession.send.withArgs('Runtime.evaluate').resolves({
+      send.withArgs('Runtime.evaluate').resolves({
         result: {value: {width: options.width, height: options.height}},
       });
-      mockSession.send.resetHistory();
+      send.resetHistory();
       const now = sinon.stub(performance, 'now').returns(0);
       return {browser, now};
     }
@@ -2303,10 +2309,12 @@ describe('McpPage', () => {
         height: 500,
       });
 
-      mockSession.send.withArgs('Target.getTargetInfo').callsFake(async () => {
-        sinon.assert.calledOnce(pptrPage.resize);
-        return {targetInfo: {embedderData: {tabActive: true}}};
-      });
+      cdpSend(mockSession)
+        .withArgs('Target.getTargetInfo')
+        .callsFake(async () => {
+          sinon.assert.calledOnce(pptrPage.resize);
+          return {targetInfo: {embedderData: {tabActive: true}}};
+        });
       const observedSize = await mcpPage.resize(700, 500);
 
       sinon.assert.notCalled(browser.setWindowBounds);
@@ -2318,13 +2326,13 @@ describe('McpPage', () => {
         contentHeight: 500,
       });
       sinon.assert.calledWithExactly(
-        mockSession.send.firstCall,
+        cdpSend(mockSession).firstCall,
         'Target.getTargetInfo',
         {targetId: 'tab-1'},
         {timeout: 500},
       );
       sinon.assert.calledWithExactly(
-        mockSession.send.secondCall,
+        cdpSend(mockSession).secondCall,
         'Runtime.evaluate',
         {
           expression: '({width: innerWidth, height: innerHeight})',
@@ -2345,7 +2353,10 @@ describe('McpPage', () => {
         width: 500,
         height: 100,
       });
-      sinon.assert.callCount(mockSession.send.withArgs('Runtime.evaluate'), 4);
+      sinon.assert.callCount(
+        cdpSend(mockSession).withArgs('Runtime.evaluate'),
+        4,
+      );
     });
 
     it('retries a stale viewport until it matches the request', async () => {
@@ -2356,33 +2367,41 @@ describe('McpPage', () => {
         {width: 900, height: 700},
       ];
       let reads = 0;
-      mockSession.send.withArgs('Runtime.evaluate').callsFake(() => {
-        const reading = readings[Math.min(reads, readings.length - 1)];
-        reads += 1;
-        return Promise.resolve({result: {value: reading}});
-      });
+      cdpSend(mockSession)
+        .withArgs('Runtime.evaluate')
+        .callsFake(() => {
+          const reading = readings[Math.min(reads, readings.length - 1)];
+          reads += 1;
+          return Promise.resolve({result: {value: reading}});
+        });
 
       assert.deepStrictEqual(await mcpPage.resize(900, 700), {
         width: 900,
         height: 700,
       });
-      sinon.assert.calledTwice(mockSession.send.withArgs('Runtime.evaluate'));
+      sinon.assert.calledTwice(
+        cdpSend(mockSession).withArgs('Runtime.evaluate'),
+      );
     });
 
     it('stops reading when a dialog opens while the viewport settles', async () => {
       const {mcpPage, pptrPage, mockSession} = await createMcpPage();
       stubResize(pptrPage, mockSession, {width: 500, height: 400});
-      mockSession.send.withArgs('Runtime.evaluate').callsFake(() => {
-        pptrPage.emit('dialog', createMockDialog());
-        return Promise.resolve({
-          result: {value: {width: 500, height: 400}},
+      cdpSend(mockSession)
+        .withArgs('Runtime.evaluate')
+        .callsFake(() => {
+          pptrPage.emit('dialog', createMockDialog());
+          return Promise.resolve({
+            result: {value: {width: 500, height: 400}},
+          });
         });
-      });
 
       assert.deepStrictEqual(await mcpPage.resize(900, 700), {
         unverifiedReason: 'a dialog is open',
       });
-      sinon.assert.calledOnce(mockSession.send.withArgs('Runtime.evaluate'));
+      sinon.assert.calledOnce(
+        cdpSend(mockSession).withArgs('Runtime.evaluate'),
+      );
       sinon.assert.notCalled(pptrPage.bringToFront);
     });
 
@@ -2411,7 +2430,7 @@ describe('McpPage', () => {
           });
         }
         sinon.assert.callOrder(browser.setWindowBounds, pptrPage.resize);
-        sinon.assert.notCalled(mockSession.send);
+        sinon.assert.notCalled(cdpSend(mockSession));
       }
     });
 
@@ -2438,20 +2457,22 @@ describe('McpPage', () => {
         contentHeight: 500,
       });
       sinon.assert.notCalled(pptrPage.bringToFront);
-      sinon.assert.notCalled(mockSession.send);
+      sinon.assert.notCalled(cdpSend(mockSession));
     });
 
     it('skips background pages with emulated focus', async () => {
       const {mcpPage, pptrPage, mockSession} = await createMcpPage();
       stubResize(pptrPage, mockSession, {width: 700, height: 500});
-      mockSession.send.withArgs('Target.getTargetInfo').resolves({
-        targetInfo: {embedderData: {tabActive: false}},
-      });
+      cdpSend(mockSession)
+        .withArgs('Target.getTargetInfo')
+        .resolves({
+          targetInfo: {embedderData: {tabActive: false}},
+        });
 
       assert.deepStrictEqual(await mcpPage.resize(700, 500), {
         unverifiedReason: 'the page is in the background',
       });
-      sinon.assert.calledOnce(mockSession.send);
+      sinon.assert.calledOnce(cdpSend(mockSession));
       sinon.assert.notCalled(pptrPage.bringToFront);
       sinon.assert.notCalled(pptrPage.evaluate);
     });
@@ -2459,13 +2480,13 @@ describe('McpPage', () => {
     it('does not guess when active tab metadata is unavailable', async () => {
       const {mcpPage, pptrPage, mockSession} = await createMcpPage();
       stubResize(pptrPage, mockSession, {width: 700, height: 500});
-      mockSession.send
+      cdpSend(mockSession)
         .withArgs('Target.getTargetInfo')
         .resolves({targetInfo: {}});
       assert.deepStrictEqual(await mcpPage.resize(700, 500), {
         unverifiedReason: 'the active tab could not be determined',
       });
-      sinon.assert.calledOnce(mockSession.send);
+      sinon.assert.calledOnce(cdpSend(mockSession));
     });
 
     it('keeps the resize when a readback session is unavailable', async () => {
@@ -2478,7 +2499,7 @@ describe('McpPage', () => {
         unverifiedReason: 'a page readback session is unavailable',
       });
       sinon.assert.calledOnce(pptrPage.resize);
-      sinon.assert.notCalled(mockSession.send);
+      sinon.assert.notCalled(cdpSend(mockSession));
     });
 
     it('does not evaluate after the readback deadline', async () => {
@@ -2491,7 +2512,7 @@ describe('McpPage', () => {
       assert.deepStrictEqual(await mcpPage.resize(700, 500), {
         unverifiedReason: 'page size readback timed out after 500ms',
       });
-      sinon.assert.calledOnce(mockSession.send);
+      sinon.assert.calledOnce(cdpSend(mockSession));
     });
 
     it('uses only the remaining readback budget for evaluation', async () => {
@@ -2502,10 +2523,18 @@ describe('McpPage', () => {
       });
       now.onSecondCall().returns(123);
       await mcpPage.resize(700, 500);
-      assert.deepStrictEqual(mockSession.send.secondCall.args[2], {
-        timeout: 377,
-      });
-      assert.strictEqual(mockSession.send.secondCall.args[1].timeout, 377);
+      sinon.assert.calledWithExactly(
+        cdpSend(mockSession).secondCall,
+        'Runtime.evaluate',
+        {
+          expression: '({width: innerWidth, height: innerHeight})',
+          returnByValue: true,
+          silent: true,
+          throwOnSideEffect: true,
+          timeout: 377,
+        },
+        {timeout: 377},
+      );
     });
 
     for (const error of [
@@ -2516,7 +2545,9 @@ describe('McpPage', () => {
       it(`keeps resize on readback failure: ${error}`, async () => {
         const {mcpPage, pptrPage, mockSession} = await createMcpPage();
         stubResize(pptrPage, mockSession, {width: 700, height: 500});
-        mockSession.send.withArgs('Runtime.evaluate').rejects(new Error(error));
+        cdpSend(mockSession)
+          .withArgs('Runtime.evaluate')
+          .rejects(new Error(error));
         assert.deepStrictEqual(await mcpPage.resize(700, 500), {
           unverifiedReason: error.includes('timed out')
             ? 'page size readback timed out after 500ms'
@@ -2529,9 +2560,11 @@ describe('McpPage', () => {
     it('reports evaluation exceptions as unverified', async () => {
       const {mcpPage, pptrPage, mockSession} = await createMcpPage();
       stubResize(pptrPage, mockSession, {width: 700, height: 500});
-      mockSession.send.withArgs('Runtime.evaluate').resolves({
-        exceptionDetails: {text: 'Possible side-effect in debug-evaluate'},
-      });
+      cdpSend(mockSession)
+        .withArgs('Runtime.evaluate')
+        .resolves({
+          exceptionDetails: {text: 'Possible side-effect in debug-evaluate'},
+        });
       assert.deepStrictEqual(await mcpPage.resize(700, 500), {
         unverifiedReason: 'page size evaluation failed',
       });
@@ -2550,7 +2583,7 @@ describe('McpPage', () => {
       stubResize(pptrPage, mockSession, {width: 700, height: 500});
       pptrPage.resize.rejects(new Error('resize failed'));
       await assert.rejects(mcpPage.resize(700, 500), /resize failed/);
-      sinon.assert.notCalled(mockSession.send);
+      sinon.assert.notCalled(cdpSend(mockSession));
     });
   });
 
