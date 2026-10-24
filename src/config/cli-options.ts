@@ -1817,7 +1817,7 @@ export const commands: Commands = {
   },
   resize_page: {
     description:
-      "Resizes the page's window so that the page has specified dimension",
+      "Resizes the page's window so that the page has specified dimension. Brings the page to the front before resizing, unless a dialog is open. If the resulting page size differs from the request, reports the requested and actual dimensions.",
     category: 'Emulation',
     args: {
       pageId: {

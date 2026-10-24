@@ -1496,6 +1496,49 @@ export class McpPage implements ContextPage {
     }
   }
 
+  async resize(
+    width: number,
+    height: number,
+  ): Promise<{width: number; height: number} | undefined> {
+    try {
+      const browser = this.pptrPage.browser();
+      const windowId = await this.pptrPage.windowId();
+      const bounds = await browser.getWindowBounds(windowId);
+
+      if (bounds.windowState === 'fullscreen') {
+        // Ubuntu needs the fullscreen exit applied twice.
+        await browser.setWindowBounds(windowId, {windowState: 'normal'});
+        await browser.setWindowBounds(windowId, {windowState: 'normal'});
+      } else if (bounds.windowState !== 'normal') {
+        await browser.setWindowBounds(windowId, {windowState: 'normal'});
+      }
+    } catch {
+      // Window APIs are not supported on all platforms
+    }
+
+    // A background tab keeps its previous layout until it is visible.
+    if (!this.getDialog()) {
+      await this.pptrPage.bringToFront();
+    }
+
+    await this.pptrPage.resize({
+      contentWidth: width,
+      contentHeight: height,
+    });
+
+    // An open dialog blocks the renderer, so reading the size would hang.
+    if (this.getDialog()) {
+      return undefined;
+    }
+
+    return await this.pptrPage.evaluate(() => {
+      return {
+        width: window.innerWidth,
+        height: window.innerHeight,
+      };
+    });
+  }
+
   async clearNetworkConditions(): Promise<void> {
     if (!this.emulationSettings.networkConditions) {
       return;

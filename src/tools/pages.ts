@@ -355,7 +355,11 @@ export const navigatePage: PageToolFactory = definePageTool(
 
 export const resizePage: PageToolFactory = definePageTool(() => ({
   name: 'resize_page',
-  description: `Resizes the page's window so that the page has specified dimension`,
+  description:
+    "Resizes the page's window so that the page has specified dimension. " +
+    'Brings the page to the front before resizing, unless a dialog is open. ' +
+    'If the resulting page size differs from the request, reports the ' +
+    'requested and actual dimensions.',
   annotations: {
     category: ToolCategory.EMULATION,
     readOnlyHint: false,
@@ -369,27 +373,17 @@ export const resizePage: PageToolFactory = definePageTool(() => ({
   verifyFilesSchema: {},
   handler: async (request, response) => {
     const page = request.page;
-
-    try {
-      const browser = page.pptrPage.browser();
-      const windowId = await page.pptrPage.windowId();
-
-      const bounds = await browser.getWindowBounds(windowId);
-
-      if (bounds.windowState === 'fullscreen') {
-        // Have to call this twice on Ubuntu when the window is in fullscreen mode.
-        await browser.setWindowBounds(windowId, {windowState: 'normal'});
-        await browser.setWindowBounds(windowId, {windowState: 'normal'});
-      } else if (bounds.windowState !== 'normal') {
-        await browser.setWindowBounds(windowId, {windowState: 'normal'});
-      }
-    } catch {
-      // Window APIs are not supported on all platforms
+    const {width, height} = request.params;
+    const actualSize = await page.resize(width, height);
+    if (
+      actualSize &&
+      (actualSize.width !== width || actualSize.height !== height)
+    ) {
+      response.appendResponseLine(
+        `Requested ${width}x${height}, page is ` +
+          `${actualSize.width}x${actualSize.height}`,
+      );
     }
-    await page.pptrPage.resize({
-      contentWidth: request.params.width,
-      contentHeight: request.params.height,
-    });
 
     response.setIncludePages(true);
   },

@@ -84,7 +84,7 @@ chrome-devtools emulate 1 --networkConditions "Offline" # Emulate network condit
 chrome-devtools emulate 1 --cpuThrottlingRate 4 --geolocation "0,0" # Emulate CPU throttling and geolocation (resets other settings)
 chrome-devtools emulate 1 --colorScheme "dark" --viewport "1920x1080" # Emulate color scheme and viewport (resets other settings)
 chrome-devtools emulate 1 --userAgent "Mozilla/5.0..." # Emulate user agent (resets other settings)
-chrome-devtools resize_page 1 1920 1080 # Resizes the selected page's window
+chrome-devtools resize_page 1 1920 1080 # Resizes the page window; reports actual size if it differs
 ```
 
 ## Performance

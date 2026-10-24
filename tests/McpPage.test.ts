@@ -26,7 +26,9 @@ import {
   createMockCDPSession,
   createMockDialog,
   createMockMcpResponse,
+  createMockPuppeteerBrowser,
   createMockPuppeteerPage,
+  type MockPuppeteerPage,
   createMockPuppeteerTarget,
   createMockServerConfig,
   createMockAuthenticatorId,
@@ -2263,6 +2265,150 @@ describe('McpPage', () => {
         nonDebuggingTool,
         unannotatedTool,
       ]);
+    });
+  });
+
+  describe('resize()', () => {
+    function stubResize(
+      pptrPage: MockPuppeteerPage,
+      options: {
+        windowState?: 'normal' | 'minimized' | 'maximized' | 'fullscreen';
+        width: number;
+        height: number;
+      },
+    ) {
+      const browser = createMockPuppeteerBrowser();
+      pptrPage.browser.returns(browser);
+      pptrPage.windowId.resolves('win-1');
+      browser.getWindowBounds.resolves({
+        windowState: options.windowState ?? 'normal',
+      });
+      pptrPage.evaluate.resolves({
+        width: options.width,
+        height: options.height,
+      });
+      pptrPage.bringToFront.resetHistory();
+      pptrPage.resize.resetHistory();
+      pptrPage.evaluate.resetHistory();
+      return {browser};
+    }
+
+    it('returns the page size after an achievable resize', async () => {
+      const {mcpPage, pptrPage} = await createMcpPage();
+      const {browser} = stubResize(pptrPage, {width: 700, height: 500});
+
+      const actualSize = await mcpPage.resize(700, 500);
+
+      sinon.assert.notCalled(browser.setWindowBounds);
+      sinon.assert.callOrder(
+        pptrPage.bringToFront,
+        pptrPage.resize,
+        pptrPage.evaluate,
+      );
+      sinon.assert.calledOnceWithExactly(pptrPage.resize, {
+        contentWidth: 700,
+        contentHeight: 500,
+      });
+      sinon.assert.calledOnce(pptrPage.evaluate);
+      assert.deepStrictEqual(actualSize, {width: 700, height: 500});
+    });
+
+    it('returns the clamped page size', async () => {
+      const {mcpPage, pptrPage} = await createMcpPage();
+      stubResize(pptrPage, {width: 500, height: 100});
+
+      const actualSize = await mcpPage.resize(100, 100);
+
+      sinon.assert.calledOnceWithExactly(pptrPage.resize, {
+        contentWidth: 100,
+        contentHeight: 100,
+      });
+      sinon.assert.calledOnce(pptrPage.evaluate);
+      assert.deepStrictEqual(actualSize, {width: 500, height: 100});
+    });
+
+    it('restores a fullscreen window twice before reading the page size', async () => {
+      const {mcpPage, pptrPage} = await createMcpPage();
+      const {browser} = stubResize(pptrPage, {
+        windowState: 'fullscreen',
+        width: 800,
+        height: 600,
+      });
+
+      const actualSize = await mcpPage.resize(800, 600);
+
+      sinon.assert.calledTwice(browser.setWindowBounds);
+      sinon.assert.calledWithExactly(
+        browser.setWindowBounds.firstCall,
+        'win-1',
+        {windowState: 'normal'},
+      );
+      sinon.assert.calledWithExactly(
+        browser.setWindowBounds.secondCall,
+        'win-1',
+        {windowState: 'normal'},
+      );
+      sinon.assert.callOrder(
+        browser.setWindowBounds,
+        pptrPage.bringToFront,
+        pptrPage.resize,
+      );
+      sinon.assert.calledOnce(pptrPage.evaluate);
+      assert.deepStrictEqual(actualSize, {width: 800, height: 600});
+    });
+
+    it('restores a maximized window once before resizing', async () => {
+      const {mcpPage, pptrPage} = await createMcpPage();
+      const {browser} = stubResize(pptrPage, {
+        windowState: 'maximized',
+        width: 725,
+        height: 525,
+      });
+
+      const actualSize = await mcpPage.resize(725, 525);
+
+      sinon.assert.calledOnceWithExactly(browser.setWindowBounds, 'win-1', {
+        windowState: 'normal',
+      });
+      sinon.assert.calledOnceWithExactly(pptrPage.resize, {
+        contentWidth: 725,
+        contentHeight: 525,
+      });
+      assert.deepStrictEqual(actualSize, {width: 725, height: 525});
+    });
+
+    it('still reads the page size when window bounds APIs are unsupported', async () => {
+      const {mcpPage, pptrPage} = await createMcpPage();
+      pptrPage.windowId.rejects(new Error('Window APIs not supported'));
+      pptrPage.evaluate.resolves({width: 700, height: 500});
+      pptrPage.evaluate.resetHistory();
+
+      const actualSize = await mcpPage.resize(700, 500);
+
+      sinon.assert.calledOnceWithExactly(pptrPage.bringToFront);
+      sinon.assert.calledOnceWithExactly(pptrPage.resize, {
+        contentWidth: 700,
+        contentHeight: 500,
+      });
+      sinon.assert.calledOnce(pptrPage.evaluate);
+      assert.deepStrictEqual(actualSize, {width: 700, height: 500});
+    });
+
+    it('does not read the page size when a dialog is open', async () => {
+      const {mcpPage, pptrPage} = await createMcpPage();
+      const {browser} = stubResize(pptrPage, {width: 700, height: 500});
+      pptrPage.emit('dialog', createMockDialog());
+
+      const actualSize = await mcpPage.resize(700, 500);
+
+      sinon.assert.notCalled(browser.setWindowBounds);
+      sinon.assert.notCalled(pptrPage.bringToFront);
+      sinon.assert.notCalled(pptrPage.evaluate);
+      sinon.assert.calledOnceWithExactly(pptrPage.resize, {
+        contentWidth: 700,
+        contentHeight: 500,
+      });
+      assert.strictEqual(actualSize, undefined);
     });
   });
 

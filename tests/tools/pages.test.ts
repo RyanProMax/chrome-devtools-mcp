@@ -1510,7 +1510,85 @@ describe('pages', () => {
       }
     });
 
-    it('resize the page', async () => {
+    it('reports requested and actual sizes when the page is clamped', async () => {
+      const {page, response, context, args} = createHandlerMocks();
+      page.resize.resolves({width: 500, height: 100});
+
+      await resizePage(args).handler(
+        {
+          params: {width: 100, height: 100},
+          page,
+        },
+        response,
+        context,
+      );
+
+      sinon.assert.calledOnceWithExactly(page.resize, 100, 100);
+      sinon.assert.calledOnceWithExactly(
+        response.appendResponseLine,
+        'Requested 100x100, page is 500x100',
+      );
+      sinon.assert.calledOnceWithExactly(response.setIncludePages, true);
+    });
+
+    it('reports a height mismatch when only the height is clamped', async () => {
+      const {page, response, context, args} = createHandlerMocks();
+      page.resize.resolves({width: 800, height: 232});
+
+      await resizePage(args).handler(
+        {
+          params: {width: 800, height: 100},
+          page,
+        },
+        response,
+        context,
+      );
+
+      sinon.assert.calledOnceWithExactly(page.resize, 800, 100);
+      sinon.assert.calledOnceWithExactly(
+        response.appendResponseLine,
+        'Requested 800x100, page is 800x232',
+      );
+      sinon.assert.calledOnceWithExactly(response.setIncludePages, true);
+    });
+
+    it('does not report a mismatch when the page matches the request', async () => {
+      const {page, response, context, args} = createHandlerMocks();
+      page.resize.resolves({width: 700, height: 500});
+
+      await resizePage(args).handler(
+        {
+          params: {width: 700, height: 500},
+          page,
+        },
+        response,
+        context,
+      );
+
+      sinon.assert.calledOnceWithExactly(page.resize, 700, 500);
+      sinon.assert.notCalled(response.appendResponseLine);
+      sinon.assert.calledOnceWithExactly(response.setIncludePages, true);
+    });
+
+    it('does not report a size when the page size is unknown', async () => {
+      const {page, response, context, args} = createHandlerMocks();
+      page.resize.resolves(undefined);
+
+      await resizePage(args).handler(
+        {
+          params: {width: 700, height: 500},
+          page,
+        },
+        response,
+        context,
+      );
+
+      sinon.assert.calledOnceWithExactly(page.resize, 700, 500);
+      sinon.assert.notCalled(response.appendResponseLine);
+      sinon.assert.calledOnceWithExactly(response.setIncludePages, true);
+    });
+
+    it('applies an achievable page size without reporting a mismatch', async () => {
       await withMcpContext(async (response, context, args) => {
         const page = context.getSelectedMcpPage().pptrPage;
         const resizePromise = page.evaluate(() => {
@@ -1526,6 +1604,7 @@ describe('pages', () => {
           response,
           context,
         );
+        assert.deepStrictEqual(response.responseLines, []);
         await resizePromise;
         await page.waitForFunction(
           () => window.innerWidth === 700 && window.innerHeight === 500,
@@ -1534,6 +1613,70 @@ describe('pages', () => {
           return [window.innerWidth, window.innerHeight];
         });
         assert.deepStrictEqual(dimensions, [700, 500]);
+      });
+    });
+
+    it('reports the requested and actual sizes when Chrome clamps the page', async () => {
+      // A real window clamps content size; Linux headless does not.
+      await withMcpContext(
+        async (response, context, args) => {
+          const page = context.getSelectedMcpPage();
+          await resizePage(args).handler(
+            {
+              params: {width: 100, height: 100},
+              page,
+            },
+            response,
+            context,
+          );
+
+          assert.strictEqual(response.responseLines.length, 1);
+          const line = response.responseLines[0];
+          assert.ok(line);
+          const match = /^Requested 100x100, page is (\d+)x(\d+)$/.exec(line);
+          assert.ok(match);
+          const reportedWidth = match[1];
+          const reportedHeight = match[2];
+          assert.ok(reportedWidth);
+          assert.ok(reportedHeight);
+          const width = Number(reportedWidth);
+          const height = Number(reportedHeight);
+          assert.ok(width !== 100 || height !== 100);
+          const dimensions = await page.pptrPage.evaluate(() => {
+            return [window.innerWidth, window.innerHeight];
+          });
+          assert.deepStrictEqual(dimensions, [width, height]);
+
+          await page.pptrPage.resize({contentWidth: 800, contentHeight: 600});
+        },
+        {debug: true},
+      );
+    });
+
+    it('does not report a stale size when resizing a background page', async () => {
+      await withMcpContext(async (response, context, args) => {
+        const background = context.getSelectedMcpPage();
+        await context.newPage();
+        context.selectPage(background);
+        const visibility = await background.pptrPage.evaluate(() => {
+          return document.visibilityState;
+        });
+        assert.strictEqual(visibility, 'hidden');
+
+        await resizePage(args).handler(
+          {
+            params: {width: 810, height: 610},
+            page: background,
+          },
+          response,
+          context,
+        );
+
+        assert.deepStrictEqual(response.responseLines, []);
+        const dimensions = await background.pptrPage.evaluate(() => {
+          return [window.innerWidth, window.innerHeight];
+        });
+        assert.deepStrictEqual(dimensions, [810, 610]);
       });
     });
 
