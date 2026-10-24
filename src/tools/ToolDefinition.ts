@@ -342,6 +342,9 @@ export type SupportedExtensions =
   | '.csv'
   | '.gz';
 
+export type ResizeResult =
+  {width: number; height: number} | {unverifiedReason: string};
+
 /**
  * Only add methods used by tools/*.
  */
@@ -562,10 +565,7 @@ export type ContextPage = Readonly<{
     text: string[],
     options?: {timeout?: number; visible?: boolean},
   ): Promise<Element>;
-  resize(
-    width: number,
-    height: number,
-  ): Promise<{width: number; height: number} | undefined>;
+  resize(width: number, height: number): Promise<ResizeResult>;
   getDevToolsPage(): Promise<Page | undefined>;
   openDevTools(): Promise<Page | undefined>;
   ensureDevToolsCommentBridge(

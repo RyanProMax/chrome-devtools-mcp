@@ -300,7 +300,7 @@
 
 ### `resize_page`
 
-**Description:** Resizes the page's window so that the page has specified dimension. Brings the page to the front before resizing, unless a dialog is open. If the resulting page size differs from the request, reports the requested and actual dimensions.
+**Description:** Resizes the page's window without activating its tab. Reports an observed CSS viewport size if it differs from the request, or explains why the size could not be verified. The observation may precede later layout updates.
 
 **Parameters:**
 

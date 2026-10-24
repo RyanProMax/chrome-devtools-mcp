@@ -356,10 +356,10 @@ export const navigatePage: PageToolFactory = definePageTool(
 export const resizePage: PageToolFactory = definePageTool(() => ({
   name: 'resize_page',
   description:
-    "Resizes the page's window so that the page has specified dimension. " +
-    'Brings the page to the front before resizing, unless a dialog is open. ' +
-    'If the resulting page size differs from the request, reports the ' +
-    'requested and actual dimensions.',
+    "Resizes the page's window without activating its tab. " +
+    'Reports an observed CSS viewport size if it differs from the request, ' +
+    'or explains why the size could not be verified. ' +
+    'The observation may precede later layout updates.',
   annotations: {
     category: ToolCategory.EMULATION,
     readOnlyHint: false,
@@ -374,14 +374,17 @@ export const resizePage: PageToolFactory = definePageTool(() => ({
   handler: async (request, response) => {
     const page = request.page;
     const {width, height} = request.params;
-    const actualSize = await page.resize(width, height);
-    if (
-      actualSize &&
-      (actualSize.width !== width || actualSize.height !== height)
-    ) {
+    const observedSize = await page.resize(width, height);
+    if ('unverifiedReason' in observedSize) {
       response.appendResponseLine(
-        `Requested ${width}x${height}, page is ` +
-          `${actualSize.width}x${actualSize.height}`,
+        `Requested ${width}x${height}; actual viewport size unverified: ` +
+          observedSize.unverifiedReason,
+      );
+    } else if (observedSize.width !== width || observedSize.height !== height) {
+      response.appendResponseLine(
+        `Requested ${width}x${height}, observed CSS viewport ` +
+          `${observedSize.width}x${observedSize.height} ` +
+          '(may change after layout updates)',
       );
     }
 

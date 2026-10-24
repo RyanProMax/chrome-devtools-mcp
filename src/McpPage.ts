@@ -36,6 +36,8 @@ import {
   lighthouseNavigation,
   lighthouseSnapshot,
   type RunnerResult,
+  CdpPage,
+  zod,
 } from './third_party/index.js';
 import type {ToolGroups} from './tools/thirdPartyDeveloper.js';
 import type {
@@ -43,6 +45,7 @@ import type {
   DevToolsData,
   MatchedStyles,
   Response,
+  ResizeResult,
   ScreenRecorderData,
   WebAuthnAuthenticatorConfig,
   WebAuthnAuthenticatorState,
@@ -152,6 +155,9 @@ function isDebuggingWebMcpTool(tool: WebMCPTool): boolean {
 
 const DEFAULT_TIMEOUT = 5_000;
 const NAVIGATION_TIMEOUT = 10_000;
+const RESIZE_READBACK_TIMEOUT = 500;
+const RESIZE_READBACK_TIMEOUT_MESSAGE =
+  'page size readback timed out after ' + RESIZE_READBACK_TIMEOUT + 'ms';
 
 /**
  * Chrome reports a URL-derived placeholder as the target title until the
@@ -1496,10 +1502,7 @@ export class McpPage implements ContextPage {
     }
   }
 
-  async resize(
-    width: number,
-    height: number,
-  ): Promise<{width: number; height: number} | undefined> {
+  async resize(width: number, height: number): Promise<ResizeResult> {
     try {
       const browser = this.pptrPage.browser();
       const windowId = await this.pptrPage.windowId();
@@ -1516,27 +1519,74 @@ export class McpPage implements ContextPage {
       // Window APIs are not supported on all platforms
     }
 
-    // A background tab keeps its previous layout until it is visible.
-    if (!this.getDialog()) {
-      await this.pptrPage.bringToFront();
-    }
-
     await this.pptrPage.resize({
       contentWidth: width,
       contentHeight: height,
     });
 
-    // An open dialog blocks the renderer, so reading the size would hang.
     if (this.getDialog()) {
-      return undefined;
+      return {unverifiedReason: 'a dialog is open'};
     }
 
-    return await this.pptrPage.evaluate(() => {
+    try {
+      const session = this.devtoolsUniverse?.session;
+      const page = this.pptrPage;
+      if (!session || !(page instanceof CdpPage)) {
+        return {unverifiedReason: 'a page readback session is unavailable'};
+      }
+      const deadline = performance.now() + RESIZE_READBACK_TIMEOUT;
+      const {targetInfo} = await session.send(
+        'Target.getTargetInfo',
+        {targetId: page._tabId},
+        {timeout: RESIZE_READBACK_TIMEOUT},
+      );
+      const tab = zod
+        .object({tabActive: zod.boolean()})
+        .safeParse(targetInfo.embedderData);
+      if (!tab.success) {
+        return {unverifiedReason: 'the active tab could not be determined'};
+      }
+      // Focus emulation can make a background document report itself visible.
+      if (!tab.data.tabActive) {
+        return {unverifiedReason: 'the page is in the background'};
+      }
+      const timeout = Math.ceil(deadline - performance.now());
+      if (timeout <= 0) {
+        return {
+          unverifiedReason: RESIZE_READBACK_TIMEOUT_MESSAGE,
+        };
+      }
+      const {result, exceptionDetails} = await session.send(
+        'Runtime.evaluate',
+        {
+          expression: '({width: innerWidth, height: innerHeight})',
+          returnByValue: true,
+          silent: true,
+          throwOnSideEffect: true,
+          timeout,
+        },
+        {timeout},
+      );
+      if (exceptionDetails) {
+        return {unverifiedReason: 'page size evaluation failed'};
+      }
+      const size = zod
+        .object({
+          width: zod.number().int().positive(),
+          height: zod.number().int().positive(),
+        })
+        .safeParse(result.value);
+      return size.success
+        ? size.data
+        : {unverifiedReason: 'the page did not return valid dimensions'};
+    } catch (error) {
+      const message = getErrorMessage(error);
       return {
-        width: window.innerWidth,
-        height: window.innerHeight,
+        unverifiedReason: message.includes('timed out')
+          ? RESIZE_READBACK_TIMEOUT_MESSAGE
+          : message,
       };
-    });
+    }
   }
 
   async clearNetworkConditions(): Promise<void> {

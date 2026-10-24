@@ -1526,7 +1526,8 @@ describe('pages', () => {
       sinon.assert.calledOnceWithExactly(page.resize, 100, 100);
       sinon.assert.calledOnceWithExactly(
         response.appendResponseLine,
-        'Requested 100x100, page is 500x100',
+        'Requested 100x100, observed CSS viewport 500x100 ' +
+          '(may change after layout updates)',
       );
       sinon.assert.calledOnceWithExactly(response.setIncludePages, true);
     });
@@ -1547,7 +1548,8 @@ describe('pages', () => {
       sinon.assert.calledOnceWithExactly(page.resize, 800, 100);
       sinon.assert.calledOnceWithExactly(
         response.appendResponseLine,
-        'Requested 800x100, page is 800x232',
+        'Requested 800x100, observed CSS viewport 800x232 ' +
+          '(may change after layout updates)',
       );
       sinon.assert.calledOnceWithExactly(response.setIncludePages, true);
     });
@@ -1570,9 +1572,9 @@ describe('pages', () => {
       sinon.assert.calledOnceWithExactly(response.setIncludePages, true);
     });
 
-    it('does not report a size when the page size is unknown', async () => {
+    it('explains why the page size is unverified', async () => {
       const {page, response, context, args} = createHandlerMocks();
-      page.resize.resolves(undefined);
+      page.resize.resolves({unverifiedReason: 'a dialog is open'});
 
       await resizePage(args).handler(
         {
@@ -1584,7 +1586,10 @@ describe('pages', () => {
       );
 
       sinon.assert.calledOnceWithExactly(page.resize, 700, 500);
-      sinon.assert.notCalled(response.appendResponseLine);
+      sinon.assert.calledOnceWithExactly(
+        response.appendResponseLine,
+        'Requested 700x500; actual viewport size unverified: a dialog is open',
+      );
       sinon.assert.calledOnceWithExactly(response.setIncludePages, true);
     });
 
@@ -1616,52 +1621,60 @@ describe('pages', () => {
       });
     });
 
-    it('reports the requested and actual sizes when Chrome clamps the page', async () => {
-      // A real window clamps content size; Linux headless does not.
-      await withMcpContext(
-        async (response, context, args) => {
-          const page = context.getSelectedMcpPage();
-          await resizePage(args).handler(
-            {
-              params: {width: 100, height: 100},
-              page,
-            },
-            response,
-            context,
-          );
+    it(
+      'reports an observed clamped viewport',
+      {skip: process.env.CHROME_DEVTOOLS_MCP_TEST_HEADFUL !== '1'},
+      async () => {
+        // A real window clamps content size; Linux headless does not.
+        await withMcpContext(
+          async (response, context, args) => {
+            const page = context.getSelectedMcpPage();
+            await resizePage(args).handler(
+              {
+                params: {width: 100, height: 100},
+                page,
+              },
+              response,
+              context,
+            );
 
-          assert.strictEqual(response.responseLines.length, 1);
-          const line = response.responseLines[0];
-          assert.ok(line);
-          const match = /^Requested 100x100, page is (\d+)x(\d+)$/.exec(line);
-          assert.ok(match);
-          const reportedWidth = match[1];
-          const reportedHeight = match[2];
-          assert.ok(reportedWidth);
-          assert.ok(reportedHeight);
-          const width = Number(reportedWidth);
-          const height = Number(reportedHeight);
-          assert.ok(width !== 100 || height !== 100);
-          const dimensions = await page.pptrPage.evaluate(() => {
-            return [window.innerWidth, window.innerHeight];
-          });
-          assert.deepStrictEqual(dimensions, [width, height]);
+            assert.strictEqual(response.responseLines.length, 1);
+            const line = response.responseLines[0];
+            assert.ok(line);
+            const match = new RegExp(
+              '^Requested 100x100, observed CSS viewport (\\d+)x(\\d+) ' +
+                '\\(may change after layout updates\\)$',
+            ).exec(line);
+            assert.ok(match);
+            const reportedWidth = match[1];
+            const reportedHeight = match[2];
+            assert.ok(reportedWidth);
+            assert.ok(reportedHeight);
+            const width = Number(reportedWidth);
+            const height = Number(reportedHeight);
+            assert.ok(width !== 100 || height !== 100);
+            const dimensions = await page.pptrPage.evaluate(() => {
+              return [window.innerWidth, window.innerHeight];
+            });
+            assert.deepStrictEqual(dimensions, [width, height]);
 
-          await page.pptrPage.resize({contentWidth: 800, contentHeight: 600});
-        },
-        {debug: true},
-      );
-    });
+            await page.pptrPage.resize({contentWidth: 800, contentHeight: 600});
+          },
+          {debug: true},
+        );
+      },
+    );
 
-    it('does not report a stale size when resizing a background page', async () => {
+    it('preserves background tab focus', async () => {
       await withMcpContext(async (response, context, args) => {
         const background = context.getSelectedMcpPage();
-        await context.newPage();
+        const foreground = await context.newPage();
         context.selectPage(background);
-        const visibility = await background.pptrPage.evaluate(() => {
-          return document.visibilityState;
-        });
-        assert.strictEqual(visibility, 'hidden');
+        await background.pptrPage.emulateFocusedPage(true);
+        assert.strictEqual(
+          (await background.pptrPage.tabInfo())?.active,
+          false,
+        );
 
         await resizePage(args).handler(
           {
@@ -1672,11 +1685,15 @@ describe('pages', () => {
           context,
         );
 
-        assert.deepStrictEqual(response.responseLines, []);
-        const dimensions = await background.pptrPage.evaluate(() => {
-          return [window.innerWidth, window.innerHeight];
-        });
-        assert.deepStrictEqual(dimensions, [810, 610]);
+        assert.deepStrictEqual(response.responseLines, [
+          'Requested 810x610; actual viewport size unverified: ' +
+            'the page is in the background',
+        ]);
+        assert.strictEqual(
+          (await background.pptrPage.tabInfo())?.active,
+          false,
+        );
+        assert.strictEqual((await foreground.pptrPage.tabInfo())?.active, true);
       });
     });
 
