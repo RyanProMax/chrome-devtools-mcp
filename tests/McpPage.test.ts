@@ -2345,6 +2345,45 @@ describe('McpPage', () => {
         width: 500,
         height: 100,
       });
+      sinon.assert.callCount(mockSession.send.withArgs('Runtime.evaluate'), 4);
+    });
+
+    it('retries a stale viewport until it matches the request', async () => {
+      const {mcpPage, pptrPage, mockSession} = await createMcpPage();
+      stubResize(pptrPage, mockSession, {width: 500, height: 400});
+      const readings = [
+        {width: 500, height: 400},
+        {width: 900, height: 700},
+      ];
+      let reads = 0;
+      mockSession.send.withArgs('Runtime.evaluate').callsFake(() => {
+        const reading = readings[Math.min(reads, readings.length - 1)];
+        reads += 1;
+        return Promise.resolve({result: {value: reading}});
+      });
+
+      assert.deepStrictEqual(await mcpPage.resize(900, 700), {
+        width: 900,
+        height: 700,
+      });
+      sinon.assert.calledTwice(mockSession.send.withArgs('Runtime.evaluate'));
+    });
+
+    it('stops reading when a dialog opens while the viewport settles', async () => {
+      const {mcpPage, pptrPage, mockSession} = await createMcpPage();
+      stubResize(pptrPage, mockSession, {width: 500, height: 400});
+      mockSession.send.withArgs('Runtime.evaluate').callsFake(() => {
+        pptrPage.emit('dialog', createMockDialog());
+        return Promise.resolve({
+          result: {value: {width: 500, height: 400}},
+        });
+      });
+
+      assert.deepStrictEqual(await mcpPage.resize(900, 700), {
+        unverifiedReason: 'a dialog is open',
+      });
+      sinon.assert.calledOnce(mockSession.send.withArgs('Runtime.evaluate'));
+      sinon.assert.notCalled(pptrPage.bringToFront);
     });
 
     it('preserves fullscreen and maximized window restoration', async () => {

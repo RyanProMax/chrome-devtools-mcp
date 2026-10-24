@@ -1621,9 +1621,43 @@ describe('pages', () => {
       });
     });
 
+    it('does not report a stale emulated size after the viewport settles', async () => {
+      await withMcpContext(async (response, context, args) => {
+        const page = context.getSelectedMcpPage();
+        await page.emulate({
+          viewport: {
+            width: 500,
+            height: 400,
+            deviceScaleFactor: 1,
+          },
+        });
+        await page.emulate({});
+
+        await resizePage(args).handler(
+          {
+            params: {width: 900, height: 700},
+            page,
+          },
+          response,
+          context,
+        );
+
+        assert.deepStrictEqual(response.responseLines, []);
+        const dimensions = await page.pptrPage.evaluate(() => {
+          return [window.innerWidth, window.innerHeight];
+        });
+        assert.deepStrictEqual(dimensions, [900, 700]);
+      });
+    });
+
     it(
       'reports an observed clamped viewport',
-      {skip: process.env.CHROME_DEVTOOLS_MCP_TEST_HEADFUL !== '1'},
+      {
+        skip:
+          process.env.CHROME_DEVTOOLS_MCP_TEST_HEADFUL === '1'
+            ? false
+            : 'headed clamp needs CHROME_DEVTOOLS_MCP_TEST_HEADFUL=1',
+      },
       async () => {
         // A real window clamps content size; Linux headless does not.
         await withMcpContext(

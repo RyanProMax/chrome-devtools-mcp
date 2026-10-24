@@ -156,8 +156,14 @@ function isDebuggingWebMcpTool(tool: WebMCPTool): boolean {
 const DEFAULT_TIMEOUT = 5_000;
 const NAVIGATION_TIMEOUT = 10_000;
 const RESIZE_READBACK_TIMEOUT = 500;
+const RESIZE_SIZE_READ_ATTEMPTS = 4;
+const RESIZE_SIZE_READ_INTERVAL = 50;
 const RESIZE_READBACK_TIMEOUT_MESSAGE =
   'page size readback timed out after ' + RESIZE_READBACK_TIMEOUT + 'ms';
+const observedPageSize = zod.object({
+  width: zod.number().int().positive(),
+  height: zod.number().int().positive(),
+});
 
 /**
  * Chrome reports a URL-derived placeholder as the target title until the
@@ -1550,36 +1556,54 @@ export class McpPage implements ContextPage {
       if (!tab.data.tabActive) {
         return {unverifiedReason: 'the page is in the background'};
       }
-      const timeout = Math.ceil(deadline - performance.now());
-      if (timeout <= 0) {
-        return {
-          unverifiedReason: RESIZE_READBACK_TIMEOUT_MESSAGE,
-        };
+      let observed: {width: number; height: number} | undefined;
+      for (let attempt = 0; attempt < RESIZE_SIZE_READ_ATTEMPTS; attempt++) {
+        if (this.getDialog()) {
+          return {unverifiedReason: 'a dialog is open'};
+        }
+        const timeout = Math.ceil(deadline - performance.now());
+        if (timeout <= 0) {
+          break;
+        }
+        const {result, exceptionDetails} = await session.send(
+          'Runtime.evaluate',
+          {
+            expression: '({width: innerWidth, height: innerHeight})',
+            returnByValue: true,
+            silent: true,
+            throwOnSideEffect: true,
+            timeout,
+          },
+          {timeout},
+        );
+        if (exceptionDetails) {
+          return {unverifiedReason: 'page size evaluation failed'};
+        }
+        const size = observedPageSize.safeParse(result.value);
+        if (!size.success) {
+          return {unverifiedReason: 'the page did not return valid dimensions'};
+        }
+        if (size.data.width === width && size.data.height === height) {
+          return size.data;
+        }
+        observed = size.data;
+        const remaining = deadline - performance.now();
+        if (
+          attempt + 1 === RESIZE_SIZE_READ_ATTEMPTS ||
+          remaining <= RESIZE_SIZE_READ_INTERVAL
+        ) {
+          break;
+        }
+        await delay(Math.min(RESIZE_SIZE_READ_INTERVAL, remaining));
       }
-      const {result, exceptionDetails} = await session.send(
-        'Runtime.evaluate',
-        {
-          expression: '({width: innerWidth, height: innerHeight})',
-          returnByValue: true,
-          silent: true,
-          throwOnSideEffect: true,
-          timeout,
-        },
-        {timeout},
-      );
-      if (exceptionDetails) {
-        return {unverifiedReason: 'page size evaluation failed'};
+      if (!observed) {
+        return {unverifiedReason: RESIZE_READBACK_TIMEOUT_MESSAGE};
       }
-      const size = zod
-        .object({
-          width: zod.number().int().positive(),
-          height: zod.number().int().positive(),
-        })
-        .safeParse(result.value);
-      return size.success
-        ? size.data
-        : {unverifiedReason: 'the page did not return valid dimensions'};
+      return observed;
     } catch (error) {
+      if (this.getDialog()) {
+        return {unverifiedReason: 'a dialog is open'};
+      }
       const message = getErrorMessage(error);
       return {
         unverifiedReason: message.includes('timed out')
@@ -1724,4 +1748,10 @@ export class McpPage implements ContextPage {
       },
     );
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => {
+    setTimeout(resolve, ms);
+  });
 }
